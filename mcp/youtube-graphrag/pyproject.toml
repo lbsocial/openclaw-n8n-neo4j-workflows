@@ -1,0 +1,21 @@
+[project]
+name = "lbsocial-youtube-graphrag-mcp"
+version = "0.1.0"
+description = "A custom Neo4j GraphRAG MCP server for LBSocial YouTube knowledge graph search with OpenClaw."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=2.0.0",
+    "neo4j>=5.20.0",
+    "python-dotenv>=1.0.1",
+    "openai>=1.0.0",
+    "google-genai>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6.0",
+]
+
+[tool.ruff]
+line-length = 100
