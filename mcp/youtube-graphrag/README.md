@@ -34,6 +34,40 @@ OpenClaw
   -> OpenClaw summary or learning path
 ```
 
+## Recommendation flow
+
+The main user-facing scenario is video recommendation from OpenClaw, including OpenClaw sessions reached from Telegram:
+
+```text
+Telegram user asks a question
+  -> OpenClaw receives the question
+  -> OpenClaw calls this MCP server
+  -> MCP server embeds the question
+  -> Neo4j vector search finds relevant Video nodes
+  -> Cypher graph traversal adds Channel and Topic context
+  -> OpenClaw summarizes the result as video recommendations or a learning path
+```
+
+This server is not a geo-query demo and it is not a general database chat interface. It is a focused retrieval tool for recommending LBSocial YouTube tutorial videos and related learning resources from the tutorial graph.
+
+## Semantic search + Cypher graph traversal
+
+The v1 query pattern combines embedding-based semantic search with Cypher graph traversal:
+
+- Semantic search uses `Video.embedding` through the `video_embeddings` Neo4j vector index.
+- Cypher traversal enriches the vector matches with graph context:
+  - `(:Channel)-[:PUBLISHED]->(:Video)`
+  - `(:Video)-[:HAS_TOPIC]->(:Topic)`
+- Returned context is source-aware and designed for OpenClaw summaries:
+  - video title
+  - URL
+  - channel
+  - topics
+  - similarity score
+  - short `document_text_summary`
+
+This follows the same GraphRAG idea used in earlier LBSocial Neo4j + Gemini tutorials: first retrieve semantically relevant nodes, then use the graph to add connected context. This YouTube tutorial server does not apply geospatial filters.
+
 ## Tools
 
 | Tool | Purpose |
@@ -44,6 +78,17 @@ OpenClaw
 | `get_recent_youtube_videos` | List recently updated videos for a simple connectivity demo. |
 | `get_video_context` | Retrieve metadata, channel, topics, and embedded text for videos matching a title phrase. |
 | `run_readonly_cypher` | Run read-only Cypher after a conservative safety check. |
+
+## Tool-first design
+
+The main workflow uses fixed MCP tools instead of asking the LLM to freely write Cypher for every user question.
+
+- `search_youtube_videos` is the primary tool for normal recommendation questions.
+- `get_recent_youtube_videos` is useful for a simple connectivity demo.
+- `get_video_context` retrieves context for a known video title phrase.
+- `run_readonly_cypher` is an advanced/debugging tool, not the main user-facing entrypoint.
+
+Fixed tools keep the public tutorial, student reproduction, and Telegram demo more stable. The server still uses Cypher internally, but the tested query patterns live inside the MCP tools.
 
 ## Expected graph schema
 
@@ -196,6 +241,39 @@ Use get_recent_youtube_videos to list the most recently updated videos in the gr
 ```text
 Use get_video_context to retrieve context for videos whose title contains OpenClaw.
 ```
+
+## Future: MCP prompt template for Cypher guidance
+
+The current v1 server exposes MCP tools only. It does not yet expose an `@mcp.prompt()` template.
+
+A future v1.1 or v2 enhancement could add a prompt such as:
+
+```text
+youtube_graphrag_cypher_prompt
+```
+
+That prompt would guide OpenClaw or another MCP client on how to work with this graph:
+
+- Use the current `Channel` / `Video` / `Topic` schema.
+- Prefer `search_youtube_videos` for ordinary video recommendation questions.
+- Generate only read-only Cypher for statistical or analytical questions.
+- Do not generate `CREATE`, `MERGE`, `DELETE`, `SET`, schema changes, or admin operations.
+- Use `run_readonly_cypher` only for advanced read-only inspection or analysis.
+
+This prompt template is not required for the current v1 test. The v1 path should first prove that OpenClaw can call the fixed MCP tools and retrieve relevant videos from Neo4j.
+
+## Future tools
+
+After the v1 semantic video search is stable, useful next tools include:
+
+```text
+get_related_videos(video_id)
+recommend_learning_path(question)
+```
+
+`get_related_videos` could combine shared topics, semantic similarity, same-channel context, and recently updated videos.
+
+`recommend_learning_path` could call `search_youtube_videos` first, then let OpenClaw organize the results by topic and relevance into a suggested viewing order.
 
 ## Security notes
 
