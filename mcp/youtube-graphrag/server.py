@@ -1,8 +1,8 @@
 """LBSocial YouTube GraphRAG MCP server.
 
-This MCP server exposes domain-specific tools for searching a Neo4j-based
-YouTube knowledge graph. It is designed for OpenClaw tutorials, but the core
-logic can also be reused by a Gemini Live / Cloud Run tool adapter.
+This MCP server is intentionally domain-specific for the OpenClaw + n8n +
+Neo4j tutorial series. It queries the YouTube metadata graph created by the
+n8n ingestion workflow, where Gemini embeddings are stored on Video nodes.
 """
 
 from __future__ import annotations
@@ -19,8 +19,10 @@ from openai import OpenAI
 
 try:
     from google import genai
+    from google.genai import types as genai_types
 except Exception:  # pragma: no cover - optional provider
     genai = None
+    genai_types = None
 
 load_dotenv()
 
@@ -37,18 +39,22 @@ class Settings:
     embedding_provider: EmbeddingProvider
     openai_embedding_model: str
     gemini_embedding_model: str
+    gemini_embedding_dimensions: int
     vector_index: str
-    chunk_label: str
     video_label: str
+    channel_label: str
     topic_label: str
-    video_to_chunk_rel: str
-    chunk_to_topic_rel: str
-    chunk_text_property: str
-    chunk_start_property: str
-    chunk_end_property: str
+    channel_to_video_rel: str
+    video_to_topic_rel: str
+    video_embedding_property: str
+    video_id_property: str
     video_title_property: str
     video_url_property: str
+    video_document_text_property: str
+    video_published_at_property: str
+    channel_title_property: str
     topic_name_property: str
+    schema_sample_size: int
 
 
 def env(name: str, default: str | None = None) -> str:
@@ -58,8 +64,18 @@ def env(name: str, default: str | None = None) -> str:
     return value
 
 
+def env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer.") from exc
+
+
 def load_settings() -> Settings:
-    provider = env("EMBEDDING_PROVIDER", "openai").lower()
+    provider = env("EMBEDDING_PROVIDER", "gemini").lower()
     if provider not in {"openai", "gemini"}:
         raise RuntimeError("EMBEDDING_PROVIDER must be either 'openai' or 'gemini'.")
 
@@ -70,19 +86,23 @@ def load_settings() -> Settings:
         neo4j_database=env("NEO4J_DATABASE", "neo4j"),
         embedding_provider=provider,  # type: ignore[arg-type]
         openai_embedding_model=env("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
-        gemini_embedding_model=env("GEMINI_EMBEDDING_MODEL", "text-embedding-004"),
-        vector_index=env("YOUTUBE_CHUNK_VECTOR_INDEX", "chunk_embedding_index"),
-        chunk_label=env("YOUTUBE_CHUNK_LABEL", "Chunk"),
+        gemini_embedding_model=env("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001"),
+        gemini_embedding_dimensions=env_int("GEMINI_EMBEDDING_DIMENSIONS", 768),
+        vector_index=env("YOUTUBE_VIDEO_VECTOR_INDEX", "video_embeddings"),
         video_label=env("YOUTUBE_VIDEO_LABEL", "Video"),
+        channel_label=env("YOUTUBE_CHANNEL_LABEL", "Channel"),
         topic_label=env("YOUTUBE_TOPIC_LABEL", "Topic"),
-        video_to_chunk_rel=env("YOUTUBE_VIDEO_TO_CHUNK_REL", "HAS_CHUNK"),
-        chunk_to_topic_rel=env("YOUTUBE_CHUNK_TO_TOPIC_REL", "MENTIONS_TOPIC"),
-        chunk_text_property=env("YOUTUBE_CHUNK_TEXT_PROPERTY", "text"),
-        chunk_start_property=env("YOUTUBE_CHUNK_START_PROPERTY", "start_time"),
-        chunk_end_property=env("YOUTUBE_CHUNK_END_PROPERTY", "end_time"),
+        channel_to_video_rel=env("YOUTUBE_CHANNEL_TO_VIDEO_REL", "PUBLISHED"),
+        video_to_topic_rel=env("YOUTUBE_VIDEO_TO_TOPIC_REL", "HAS_TOPIC"),
+        video_embedding_property=env("YOUTUBE_VIDEO_EMBEDDING_PROPERTY", "embedding"),
+        video_id_property=env("YOUTUBE_VIDEO_ID_PROPERTY", "video_id"),
         video_title_property=env("YOUTUBE_VIDEO_TITLE_PROPERTY", "title"),
         video_url_property=env("YOUTUBE_VIDEO_URL_PROPERTY", "url"),
+        video_document_text_property=env("YOUTUBE_VIDEO_DOCUMENT_TEXT_PROPERTY", "document_text"),
+        video_published_at_property=env("YOUTUBE_VIDEO_PUBLISHED_AT_PROPERTY", "published_at"),
+        channel_title_property=env("YOUTUBE_CHANNEL_TITLE_PROPERTY", "channel_title"),
         topic_name_property=env("YOUTUBE_TOPIC_NAME_PROPERTY", "name"),
+        schema_sample_size=env_int("NEO4J_SCHEMA_SAMPLE_SIZE", 100),
     )
 
 
@@ -101,6 +121,39 @@ def _safe_identifier(value: str, label: str) -> str:
     return value
 
 
+def _identifiers() -> dict[str, str]:
+    return {
+        "vector_index": _safe_identifier(settings.vector_index, "vector index"),
+        "video_label": _safe_identifier(settings.video_label, "video label"),
+        "channel_label": _safe_identifier(settings.channel_label, "channel label"),
+        "topic_label": _safe_identifier(settings.topic_label, "topic label"),
+        "channel_to_video_rel": _safe_identifier(
+            settings.channel_to_video_rel, "channel-to-video relationship"
+        ),
+        "video_to_topic_rel": _safe_identifier(
+            settings.video_to_topic_rel, "video-to-topic relationship"
+        ),
+        "video_embedding_property": _safe_identifier(
+            settings.video_embedding_property, "video embedding property"
+        ),
+        "video_id_property": _safe_identifier(settings.video_id_property, "video ID property"),
+        "video_title_property": _safe_identifier(
+            settings.video_title_property, "video title property"
+        ),
+        "video_url_property": _safe_identifier(settings.video_url_property, "video URL property"),
+        "video_document_text_property": _safe_identifier(
+            settings.video_document_text_property, "video document text property"
+        ),
+        "video_published_at_property": _safe_identifier(
+            settings.video_published_at_property, "video published-at property"
+        ),
+        "channel_title_property": _safe_identifier(
+            settings.channel_title_property, "channel title property"
+        ),
+        "topic_name_property": _safe_identifier(settings.topic_name_property, "topic name property"),
+    }
+
+
 def _embed_with_openai(question: str) -> list[float]:
     client = OpenAI(api_key=env("OPENAI_API_KEY"))
     response = client.embeddings.create(
@@ -113,11 +166,23 @@ def _embed_with_openai(question: str) -> list[float]:
 def _embed_with_gemini(question: str) -> list[float]:
     if genai is None:
         raise RuntimeError("google-genai is not available. Install dependencies with `uv sync`.")
+
     client = genai.Client(api_key=env("GEMINI_API_KEY"))
-    response = client.models.embed_content(
-        model=settings.gemini_embedding_model,
-        contents=question,
-    )
+    kwargs: dict[str, Any] = {
+        "model": settings.gemini_embedding_model,
+        "contents": question,
+    }
+    if genai_types is not None:
+        kwargs["config"] = genai_types.EmbedContentConfig(
+            output_dimensionality=settings.gemini_embedding_dimensions
+        )
+
+    try:
+        response = client.models.embed_content(**kwargs)
+    except TypeError:
+        kwargs.pop("config", None)
+        response = client.models.embed_content(**kwargs)
+
     embedding = response.embeddings[0].values
     return list(embedding)
 
@@ -130,80 +195,153 @@ def embed_question(question: str) -> list[float]:
     raise RuntimeError(f"Unsupported embedding provider: {settings.embedding_provider}")
 
 
-def _youtube_search_cypher() -> str:
-    vector_index = _safe_identifier(settings.vector_index, "vector index")
-    chunk_label = _safe_identifier(settings.chunk_label, "chunk label")
-    video_label = _safe_identifier(settings.video_label, "video label")
-    topic_label = _safe_identifier(settings.topic_label, "topic label")
-    video_to_chunk_rel = _safe_identifier(settings.video_to_chunk_rel, "video-to-chunk relationship")
-    chunk_to_topic_rel = _safe_identifier(settings.chunk_to_topic_rel, "chunk-to-topic relationship")
-    chunk_text_property = _safe_identifier(settings.chunk_text_property, "chunk text property")
-    chunk_start_property = _safe_identifier(settings.chunk_start_property, "chunk start property")
-    chunk_end_property = _safe_identifier(settings.chunk_end_property, "chunk end property")
-    video_title_property = _safe_identifier(settings.video_title_property, "video title property")
-    video_url_property = _safe_identifier(settings.video_url_property, "video URL property")
-    topic_name_property = _safe_identifier(settings.topic_name_property, "topic name property")
+def _summary_text(value: Any, max_chars: int = 700) -> str:
+    text = "" if value is None else str(value).strip()
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars].rstrip()}..."
 
+
+def _youtube_search_cypher() -> str:
+    ids = _identifiers()
     return f"""
     CALL db.index.vector.queryNodes($vector_index, $top_k, $query_embedding)
-    YIELD node AS chunk, score
+    YIELD node AS video, score
 
-    MATCH (video:{video_label})-[:{video_to_chunk_rel}]->(chunk:{chunk_label})
-    OPTIONAL MATCH (chunk)-[:{chunk_to_topic_rel}]->(topic:{topic_label})
+    WHERE video:{ids["video_label"]}
+
+    OPTIONAL MATCH (channel:{ids["channel_label"]})-[:{ids["channel_to_video_rel"]}]->(video)
+    OPTIONAL MATCH (video)-[:{ids["video_to_topic_rel"]}]->(topic:{ids["topic_label"]})
 
     RETURN
-      video.{video_title_property} AS video_title,
-      video.{video_url_property} AS video_url,
-      chunk.{chunk_start_property} AS start_time,
-      chunk.{chunk_end_property} AS end_time,
-      chunk.{chunk_text_property} AS matched_text,
-      collect(DISTINCT topic.{topic_name_property}) AS topics,
+      video.{ids["video_id_property"]} AS video_id,
+      video.{ids["video_title_property"]} AS title,
+      video.{ids["video_url_property"]} AS url,
+      video.{ids["video_published_at_property"]} AS published_at,
+      channel.{ids["channel_title_property"]} AS channel,
+      collect(DISTINCT topic.{ids["topic_name_property"]}) AS topics,
+      video.{ids["video_document_text_property"]} AS document_text,
       score
     ORDER BY score DESC
     """
 
 
-def _video_context_cypher() -> str:
-    chunk_label = _safe_identifier(settings.chunk_label, "chunk label")
-    video_label = _safe_identifier(settings.video_label, "video label")
-    topic_label = _safe_identifier(settings.topic_label, "topic label")
-    video_to_chunk_rel = _safe_identifier(settings.video_to_chunk_rel, "video-to-chunk relationship")
-    chunk_to_topic_rel = _safe_identifier(settings.chunk_to_topic_rel, "chunk-to-topic relationship")
-    chunk_text_property = _safe_identifier(settings.chunk_text_property, "chunk text property")
-    chunk_start_property = _safe_identifier(settings.chunk_start_property, "chunk start property")
-    chunk_end_property = _safe_identifier(settings.chunk_end_property, "chunk end property")
-    video_title_property = _safe_identifier(settings.video_title_property, "video title property")
-    video_url_property = _safe_identifier(settings.video_url_property, "video URL property")
-    topic_name_property = _safe_identifier(settings.topic_name_property, "topic name property")
-
+def _recent_videos_cypher() -> str:
+    ids = _identifiers()
     return f"""
-    MATCH (video:{video_label})
-    WHERE toLower(toString(video.{video_title_property})) CONTAINS toLower($video_title)
-
-    OPTIONAL MATCH (video)-[:{video_to_chunk_rel}]->(chunk:{chunk_label})
-    OPTIONAL MATCH (chunk)-[:{chunk_to_topic_rel}]->(topic:{topic_label})
-
+    MATCH (video:{ids["video_label"]})
+    OPTIONAL MATCH (channel:{ids["channel_label"]})-[:{ids["channel_to_video_rel"]}]->(video)
+    OPTIONAL MATCH (video)-[:{ids["video_to_topic_rel"]}]->(topic:{ids["topic_label"]})
     RETURN
-      video.{video_title_property} AS video_title,
-      video.{video_url_property} AS video_url,
-      collect(DISTINCT {{
-        start_time: chunk.{chunk_start_property},
-        end_time: chunk.{chunk_end_property},
-        text: chunk.{chunk_text_property}
-      }}) AS chunks,
-      collect(DISTINCT topic.{topic_name_property}) AS topics
+      video.{ids["video_id_property"]} AS video_id,
+      video.{ids["video_title_property"]} AS title,
+      video.{ids["video_url_property"]} AS url,
+      video.{ids["video_published_at_property"]} AS published_at,
+      channel.{ids["channel_title_property"]} AS channel,
+      collect(DISTINCT topic.{ids["topic_name_property"]}) AS topics,
+      size(video.{ids["video_embedding_property"]}) AS embedding_dimensions,
+      video.updated_at AS updated_at
+    ORDER BY video.updated_at DESC, video.{ids["video_published_at_property"]} DESC
     LIMIT $limit
     """
 
 
-@mcp.tool()
-def search_youtube_kg(question: str, top_k: int = 5) -> dict[str, Any]:
-    """Search the LBSocial YouTube knowledge graph using vector-based GraphRAG.
+def _video_context_cypher() -> str:
+    ids = _identifiers()
+    return f"""
+    MATCH (video:{ids["video_label"]})
+    WHERE toLower(toString(video.{ids["video_title_property"]})) CONTAINS toLower($title_phrase)
 
-    Use this tool when a user asks for LBSocial videos, tutorials, timestamps,
-    topics, or learning-path material related to OpenClaw, n8n, Neo4j, GraphRAG,
-    Gemini, cloud data workflows, or AI/data-science education.
+    OPTIONAL MATCH (channel:{ids["channel_label"]})-[:{ids["channel_to_video_rel"]}]->(video)
+    OPTIONAL MATCH (video)-[:{ids["video_to_topic_rel"]}]->(topic:{ids["topic_label"]})
+
+    RETURN
+      video.{ids["video_id_property"]} AS video_id,
+      video.{ids["video_title_property"]} AS title,
+      video.{ids["video_url_property"]} AS url,
+      video.{ids["video_published_at_property"]} AS published_at,
+      channel.{ids["channel_title_property"]} AS channel,
+      collect(DISTINCT topic.{ids["topic_name_property"]}) AS topics,
+      video.{ids["video_document_text_property"]} AS document_text,
+      size(video.{ids["video_embedding_property"]}) AS embedding_dimensions
+    ORDER BY video.{ids["video_published_at_property"]} DESC
+    LIMIT $limit
     """
+
+
+def _format_video_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    results = []
+    for record in records:
+        item = dict(record)
+        if "document_text" in item:
+            item["document_text_summary"] = _summary_text(item.pop("document_text"))
+        results.append(item)
+    return results
+
+
+@mcp.tool()
+def get_neo4j_schema_and_indexes() -> dict[str, Any]:
+    """Inspect labels, relationships, sampled properties, vector indexes, and fulltext indexes."""
+    with driver.session(database=settings.neo4j_database) as session:
+        labels = [record["label"] for record in session.run("CALL db.labels() YIELD label RETURN label")]
+        relationships = [
+            record["relationshipType"]
+            for record in session.run(
+                "CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType"
+            )
+        ]
+        node_properties = [
+            dict(record)
+            for record in session.run(
+                """
+                MATCH (node)
+                WITH node LIMIT $sample_size
+                UNWIND labels(node) AS label
+                UNWIND keys(node) AS property
+                RETURN label, collect(DISTINCT property) AS properties
+                ORDER BY label
+                """,
+                sample_size=settings.schema_sample_size,
+            )
+        ]
+        relationship_properties = [
+            dict(record)
+            for record in session.run(
+                """
+                MATCH ()-[rel]->()
+                WITH rel LIMIT $sample_size
+                UNWIND keys(rel) AS property
+                RETURN type(rel) AS relationship_type, collect(DISTINCT property) AS properties
+                ORDER BY relationship_type
+                """,
+                sample_size=settings.schema_sample_size,
+            )
+        ]
+        indexes = [
+            dict(record)
+            for record in session.run(
+                """
+                SHOW INDEXES
+                YIELD name, type, state, labelsOrTypes, properties
+                WHERE type IN ["VECTOR", "FULLTEXT"]
+                RETURN name, type, state, labelsOrTypes, properties
+                ORDER BY type, name
+                """
+            )
+        ]
+
+    return {
+        "database": settings.neo4j_database,
+        "sample_size": settings.schema_sample_size,
+        "labels": labels,
+        "relationships": relationships,
+        "node_properties": node_properties,
+        "relationship_properties": relationship_properties,
+        "indexes": indexes,
+    }
+
+
+def _search_youtube_videos_impl(question: str, top_k: int) -> dict[str, Any]:
     if top_k < 1 or top_k > 20:
         raise ValueError("top_k must be between 1 and 20.")
 
@@ -216,33 +354,66 @@ def search_youtube_kg(question: str, top_k: int = 5) -> dict[str, Any]:
             top_k=top_k,
             query_embedding=query_embedding,
         )
-        matches = [dict(record) for record in records]
+        matches = _format_video_records([dict(record) for record in records])
 
     return {
         "question": question,
         "top_k": top_k,
         "embedding_provider": settings.embedding_provider,
+        "embedding_model": (
+            settings.gemini_embedding_model
+            if settings.embedding_provider == "gemini"
+            else settings.openai_embedding_model
+        ),
         "vector_index": settings.vector_index,
         "matches": matches,
     }
 
 
 @mcp.tool()
-def get_video_context(video_title: str, limit: int = 5) -> dict[str, Any]:
-    """Retrieve chunks and topics for videos whose titles match a text phrase."""
+def search_youtube_videos(question: str, top_k: int = 5) -> dict[str, Any]:
+    """Search YouTube Video nodes using vector search plus Channel/Topic graph context."""
+    return _search_youtube_videos_impl(question=question, top_k=top_k)
+
+
+@mcp.tool()
+def search_youtube_kg(question: str, top_k: int = 5) -> dict[str, Any]:
+    """Backward-compatible alias for search_youtube_videos."""
+    return _search_youtube_videos_impl(question=question, top_k=top_k)
+
+
+@mcp.tool()
+def get_recent_youtube_videos(limit: int = 10) -> dict[str, Any]:
+    """List recently updated YouTube videos from the tutorial graph."""
+    if limit < 1 or limit > 50:
+        raise ValueError("limit must be between 1 and 50.")
+
+    with driver.session(database=settings.neo4j_database) as session:
+        records = session.run(_recent_videos_cypher(), limit=limit)
+        results = [dict(record) for record in records]
+
+    return {
+        "limit": limit,
+        "results": results,
+    }
+
+
+@mcp.tool()
+def get_video_context(title_phrase: str, limit: int = 5) -> dict[str, Any]:
+    """Retrieve metadata, channel, topics, and embedded text for videos matching a title phrase."""
     if limit < 1 or limit > 20:
         raise ValueError("limit must be between 1 and 20.")
 
     with driver.session(database=settings.neo4j_database) as session:
         records = session.run(
             _video_context_cypher(),
-            video_title=video_title,
+            title_phrase=title_phrase,
             limit=limit,
         )
-        results = [dict(record) for record in records]
+        results = _format_video_records([dict(record) for record in records])
 
     return {
-        "video_title_search": video_title,
+        "title_phrase": title_phrase,
         "limit": limit,
         "results": results,
     }
@@ -258,6 +429,12 @@ def _is_safe_read_query(cypher: str) -> bool:
         r"\bREMOVE\b",
         r"\bDROP\b",
         r"\bLOAD\s+CSV\b",
+        r"\bALTER\b",
+        r"\bGRANT\b",
+        r"\bDENY\b",
+        r"\bREVOKE\b",
+        r"\bSTART\s+DATABASE\b",
+        r"\bSTOP\s+DATABASE\b",
         r"\bCALL\s+dbms\.",
     ]
     return not any(re.search(pattern, cypher, re.IGNORECASE) for pattern in blocked)
@@ -266,6 +443,9 @@ def _is_safe_read_query(cypher: str) -> bool:
 @mcp.tool()
 def run_readonly_cypher(cypher: str, limit: int = 20) -> dict[str, Any]:
     """Run a manually supplied read-only Cypher query after a conservative safety check."""
+    if limit < 1 or limit > 100:
+        raise ValueError("limit must be between 1 and 100.")
+
     if not _is_safe_read_query(cypher):
         return {
             "safe": False,
@@ -273,7 +453,7 @@ def run_readonly_cypher(cypher: str, limit: int = 20) -> dict[str, Any]:
             "cypher": cypher,
         }
 
-    safe_query = cypher.strip()
+    safe_query = cypher.strip().rstrip(";")
     if " LIMIT " not in f" {safe_query.upper()} ":
         safe_query = f"{safe_query}\nLIMIT {limit}"
 

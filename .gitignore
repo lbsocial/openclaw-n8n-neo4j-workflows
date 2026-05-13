@@ -216,3 +216,17 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project secrets and local runtime files
+.env.*
+!.env.example
+*.key
+*.pem
+*.crt
+credentials/
+secrets/
+*.credentials.json
+server_config.local.json
+server_config.local.*.json
+mcp/**/server_config.local.json
+mcp/**/server_config.local.*.json
