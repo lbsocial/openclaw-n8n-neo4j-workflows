@@ -269,6 +269,69 @@ def _video_context_cypher() -> str:
     """
 
 
+def _video_by_id_cypher() -> str:
+    ids = _identifiers()
+    return f"""
+    MATCH (video:{ids["video_label"]} {{{ids["video_id_property"]}: $video_id}})
+    OPTIONAL MATCH (channel:{ids["channel_label"]})-[:{ids["channel_to_video_rel"]}]->(video)
+    OPTIONAL MATCH (video)-[:{ids["video_to_topic_rel"]}]->(topic:{ids["topic_label"]})
+    RETURN
+      video.{ids["video_id_property"]} AS video_id,
+      video.{ids["video_title_property"]} AS title,
+      video.{ids["video_url_property"]} AS url,
+      video.{ids["video_published_at_property"]} AS published_at,
+      channel.{ids["channel_title_property"]} AS channel,
+      collect(DISTINCT topic.{ids["topic_name_property"]}) AS topics,
+      video.{ids["video_document_text_property"]} AS document_text,
+      size(video.{ids["video_embedding_property"]}) AS embedding_dimensions
+    LIMIT 1
+    """
+
+
+def _related_videos_cypher() -> str:
+    ids = _identifiers()
+    return f"""
+    MATCH (source:{ids["video_label"]} {{{ids["video_id_property"]}: $video_id}})
+    WHERE source.{ids["video_embedding_property"]} IS NOT NULL
+
+    CALL db.index.vector.queryNodes(
+      $vector_index,
+      $candidate_limit,
+      source.{ids["video_embedding_property"]}
+    )
+    YIELD node AS video, score
+
+    WHERE video:{ids["video_label"]}
+      AND video.{ids["video_id_property"]} <> source.{ids["video_id_property"]}
+
+    OPTIONAL MATCH (source)-[:{ids["video_to_topic_rel"]}]->(shared:{ids["topic_label"]})
+      <-[:{ids["video_to_topic_rel"]}]-(video)
+    OPTIONAL MATCH (video)-[:{ids["video_to_topic_rel"]}]->(topic:{ids["topic_label"]})
+    OPTIONAL MATCH (channel:{ids["channel_label"]})-[:{ids["channel_to_video_rel"]}]->(video)
+
+    WITH
+      video,
+      score,
+      channel,
+      collect(DISTINCT shared.{ids["topic_name_property"]}) AS shared_topics,
+      collect(DISTINCT topic.{ids["topic_name_property"]}) AS topics
+
+    RETURN
+      video.{ids["video_id_property"]} AS video_id,
+      video.{ids["video_title_property"]} AS title,
+      video.{ids["video_url_property"]} AS url,
+      video.{ids["video_published_at_property"]} AS published_at,
+      channel.{ids["channel_title_property"]} AS channel,
+      topics,
+      shared_topics,
+      size(shared_topics) AS shared_topic_count,
+      video.{ids["video_document_text_property"]} AS document_text,
+      score
+    ORDER BY shared_topic_count DESC, score DESC
+    LIMIT $limit
+    """
+
+
 def _format_video_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     results = []
     for record in records:
@@ -417,6 +480,95 @@ def get_video_context(title_phrase: str, limit: int = 5) -> dict[str, Any]:
         "limit": limit,
         "results": results,
     }
+
+
+@mcp.tool()
+def get_related_videos(video_id: str, limit: int = 5) -> dict[str, Any]:
+    """Recommend videos related to a source video using semantic search plus shared topics."""
+    if limit < 1 or limit > 20:
+        raise ValueError("limit must be between 1 and 20.")
+
+    with driver.session(database=settings.neo4j_database) as session:
+        source_record = session.run(_video_by_id_cypher(), video_id=video_id).single()
+        if source_record is None:
+            return {
+                "video_id": video_id,
+                "found": False,
+                "message": "No source video found for the provided video_id.",
+                "related_videos": [],
+            }
+
+        source_video = _format_video_records([dict(source_record)])[0]
+
+        candidate_limit = max(limit * 5, 20)
+        records = session.run(
+            _related_videos_cypher(),
+            video_id=video_id,
+            vector_index=settings.vector_index,
+            candidate_limit=candidate_limit,
+            limit=limit,
+        )
+        related_videos = _format_video_records([dict(record) for record in records])
+
+    return {
+        "video_id": video_id,
+        "found": True,
+        "limit": limit,
+        "vector_index": settings.vector_index,
+        "source_video": source_video,
+        "related_videos": related_videos,
+    }
+
+
+@mcp.tool()
+def recommend_learning_path(question: str, top_k: int = 5) -> dict[str, Any]:
+    """Find relevant videos and return structured context for an OpenClaw learning path."""
+    results = _search_youtube_videos_impl(question=question, top_k=top_k)
+    results["recommendation_instruction"] = (
+        "Summarize these matches as a practical learning path. Use the highest-scoring videos "
+        "first, group related topics when helpful, and include video titles and URLs as sources."
+    )
+    return results
+
+
+@mcp.prompt()
+def youtube_graphrag_cypher_prompt(question: str = "") -> str:
+    """Guide an MCP client on safe Cypher usage for the YouTube GraphRAG schema."""
+    question_text = question.strip() or "<user question>"
+    ids = _identifiers()
+    return f"""You are helping query the LBSocial YouTube GraphRAG Neo4j database.
+
+User question:
+{question_text}
+
+Current graph schema:
+- (:{ids["channel_label"]})-[:{ids["channel_to_video_rel"]}]->(:{ids["video_label"]})
+- (:{ids["video_label"]})-[:{ids["video_to_topic_rel"]}]->(:{ids["topic_label"]})
+
+Important properties:
+- {ids["video_label"]}.{ids["video_id_property"]}
+- {ids["video_label"]}.{ids["video_title_property"]}
+- {ids["video_label"]}.{ids["video_url_property"]}
+- {ids["video_label"]}.{ids["video_published_at_property"]}
+- {ids["video_label"]}.{ids["video_document_text_property"]}
+- {ids["video_label"]}.{ids["video_embedding_property"]}
+- {ids["channel_label"]}.{ids["channel_title_property"]}
+- {ids["topic_label"]}.{ids["topic_name_property"]}
+
+Preferred tools:
+- For ordinary recommendation questions, use search_youtube_videos or recommend_learning_path.
+- For source-video follow-up questions, use get_related_videos.
+- For connectivity checks, use get_recent_youtube_videos or get_neo4j_schema_and_indexes.
+- Use run_readonly_cypher only for advanced read-only inspection or statistical analysis.
+
+Cypher safety rules:
+- Generate read-only Cypher only.
+- Do not generate CREATE, MERGE, DELETE, DETACH, SET, REMOVE, DROP, LOAD CSV, ALTER, GRANT,
+  DENY, REVOKE, START DATABASE, STOP DATABASE, or dbms admin calls.
+- Do not expose credentials, environment variables, secrets, or internal file paths.
+- Prefer returning video titles, URLs, channel names, topics, and counts that OpenClaw can
+  summarize for the user.
+"""
 
 
 def _is_safe_read_query(cypher: str) -> bool:
