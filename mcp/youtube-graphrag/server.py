@@ -342,7 +342,7 @@ def _format_video_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]
     return results
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def get_neo4j_schema_and_indexes() -> dict[str, Any]:
     """Inspect labels, relationships, sampled properties, vector indexes, and fulltext indexes."""
     with driver.session(database=settings.neo4j_database) as session:
@@ -433,19 +433,19 @@ def _search_youtube_videos_impl(question: str, top_k: int) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def search_youtube_videos(question: str, top_k: int = 5) -> dict[str, Any]:
     """Search YouTube Video nodes using vector search plus Channel/Topic graph context."""
     return _search_youtube_videos_impl(question=question, top_k=top_k)
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def search_youtube_kg(question: str, top_k: int = 5) -> dict[str, Any]:
     """Backward-compatible alias for search_youtube_videos."""
     return _search_youtube_videos_impl(question=question, top_k=top_k)
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def get_recent_youtube_videos(limit: int = 10) -> dict[str, Any]:
     """List recently updated YouTube videos from the tutorial graph."""
     if limit < 1 or limit > 50:
@@ -461,7 +461,7 @@ def get_recent_youtube_videos(limit: int = 10) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def get_video_context(title_phrase: str, limit: int = 5) -> dict[str, Any]:
     """Retrieve metadata, channel, topics, and embedded text for videos matching a title phrase."""
     if limit < 1 or limit > 20:
@@ -482,7 +482,7 @@ def get_video_context(title_phrase: str, limit: int = 5) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def get_related_videos(video_id: str, limit: int = 5) -> dict[str, Any]:
     """Recommend videos related to a source video using semantic search plus shared topics."""
     if limit < 1 or limit > 20:
@@ -520,7 +520,7 @@ def get_related_videos(video_id: str, limit: int = 5) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def recommend_learning_path(question: str, top_k: int = 5) -> dict[str, Any]:
     """Find relevant videos and return structured context for an OpenClaw learning path."""
     results = _search_youtube_videos_impl(question=question, top_k=top_k)
@@ -592,7 +592,7 @@ def _is_safe_read_query(cypher: str) -> bool:
     return not any(re.search(pattern, cypher, re.IGNORECASE) for pattern in blocked)
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def run_readonly_cypher(cypher: str, limit: int = 20) -> dict[str, Any]:
     """Run a manually supplied read-only Cypher query after a conservative safety check."""
     if limit < 1 or limit > 100:

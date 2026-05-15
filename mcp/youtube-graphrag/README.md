@@ -8,6 +8,7 @@ It is a course-focused MCP server, not a general-purpose Neo4j MCP server. If yo
 
 - LBSocial website: https://www.lbsocial.net/
 - LBSocial YouTube channel: https://www.youtube.com/@LBSocial
+- How to Build a GraphRAG Ingestion Pipeline with OpenClaw, n8n & Neo4j: https://www.lbsocial.net/post/graphrag-ingestion-pipeline-openclaw-n8n-neo4j
 
 The website is the main home for LBSocial tutorials, videos, and course resources. The YouTube channel hosts the public videos for OpenClaw, n8n, Neo4j, GraphRAG, and the workflow lessons that this MCP server supports.
 
@@ -184,6 +185,38 @@ uv run python server.py
 ```
 
 The process may appear to wait silently. That is normal for a stdio MCP server because it waits for an MCP client such as OpenClaw, VS Code, Gemini CLI, or Claude Desktop.
+
+## Local testing clients
+
+This folder includes small local MCP clients for testing before registering the server with OpenClaw. They start `server.py` over stdio, call the MCP tools, and print the results. Run them from this folder after `uv sync` and after creating `.env`.
+
+| File | Use when | What it does |
+|---|---|---|
+| `local_client_test.py` | You want one command to verify the whole local setup. | Calls schema inspection, recent videos, semantic search, learning-path retrieval, and read-only Cypher. |
+| `local_ask.py` | You want to type questions like a user. | Prompts for natural-language questions and returns video recommendations from `search_youtube_videos`. |
+| `local_tool_menu.py` | You want to test one MCP tool at a time. | Shows a numbered menu for all exposed tools, including related videos, title context, and read-only Cypher. |
+
+Run a full smoke test:
+
+```bash
+uv run python local_client_test.py --question "OpenClaw n8n Neo4j GraphRAG" --top-k 3
+```
+
+Ask questions interactively:
+
+```bash
+uv run python local_ask.py
+```
+
+Try every exposed MCP tool from a menu:
+
+```bash
+uv run python local_tool_menu.py
+```
+
+The local clients are for development and tutorial testing only. OpenClaw and other MCP clients should register `server.py`, not the `local_*.py` helper scripts.
+
+The tools use `@mcp.tool(output_schema=None)` so FastMCP 3.x clients receive JSON content without strict structured-output validation errors. This keeps the local client tests and stdio MCP integration aligned.
 
 ## Register with OpenClaw on the VM
 
