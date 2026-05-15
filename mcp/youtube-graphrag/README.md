@@ -2,6 +2,8 @@
 
 This folder contains a custom Model Context Protocol (MCP) server for querying the YouTube metadata graph built in the OpenClaw + n8n + Neo4j tutorial series.
 
+> This server is designed for public tutorials and teaching demonstrations. It is not a production-ready GraphRAG service. For production deployment, use managed secrets, access control, logging, rate limiting, and read-only database roles.
+
 It is a course-focused MCP server, not a general-purpose Neo4j MCP server. If you only need generic schema inspection and Cypher execution, use the official Neo4j MCP server. If you are following this tutorial series and want OpenClaw to search the YouTube GraphRAG database, use this server.
 
 ## Tutorial resources
@@ -11,6 +13,10 @@ It is a course-focused MCP server, not a general-purpose Neo4j MCP server. If yo
 - How to Build a GraphRAG Ingestion Pipeline with OpenClaw, n8n & Neo4j: https://www.lbsocial.net/post/graphrag-ingestion-pipeline-openclaw-n8n-neo4j
 
 The website is the main home for LBSocial tutorials, videos, and course resources. The YouTube channel hosts the public videos for OpenClaw, n8n, Neo4j, GraphRAG, and the workflow lessons that this MCP server supports.
+
+## 中文简介
+
+这个文件夹是 LBSocial YouTube GraphRAG 教程的定制 MCP server。前一阶段由 n8n 调用 YouTube Data API、生成 Gemini embeddings，并把 YouTube metadata 写入 Neo4j；这个 MCP server 负责让 OpenClaw 或其他 MCP client 查询这个图数据库，完成视频语义搜索、相关视频推荐和学习路径生成。
 
 ## What this server does
 
@@ -145,6 +151,17 @@ From this folder:
 uv sync
 ```
 
+## Tutorial environment
+
+This tutorial project targets:
+
+- Google Cloud VM for the OpenClaw runtime.
+- Python 3.10 or newer.
+- `uv` for local dependency sync and execution.
+- Neo4j AuraDB with the tutorial `Channel` / `Video` / `Topic` graph.
+- Gemini embeddings stored as 768-dimensional vectors on `Video.embedding`.
+- FastMCP 3.x for stdio MCP integration.
+
 Create a local environment file:
 
 ```bash
@@ -153,6 +170,8 @@ nano .env
 ```
 
 Fill in your Neo4j AuraDB and Gemini credentials. Do not commit real credentials.
+
+The MCP server does not call the YouTube Data API directly. If you are rebuilding the n8n ingestion workflow, keep the YouTube API key in your n8n credentials or ingestion-side environment, not in this MCP server `.env` file.
 
 ## Create the vector index
 
@@ -217,6 +236,29 @@ uv run python local_tool_menu.py
 The local clients are for development and tutorial testing only. OpenClaw and other MCP clients should register `server.py`, not the `local_*.py` helper scripts.
 
 The tools use `@mcp.tool(output_schema=None)` so FastMCP 3.x clients receive JSON content without strict structured-output validation errors. This keeps the local client tests and stdio MCP integration aligned.
+
+## Use with Claude Desktop or another MCP client
+
+OpenClaw is the main tutorial client, but the server can also run from any stdio MCP client that supports custom servers. For Claude Desktop, add an entry like this to your MCP configuration and adjust the path for your machine:
+
+```json
+{
+  "mcpServers": {
+    "lbsocial-youtube-graphrag": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/absolute/path/to/openclaw-n8n-neo4j-workflows/mcp/youtube-graphrag",
+        "run",
+        "python",
+        "server.py"
+      ]
+    }
+  }
+}
+```
+
+The server still needs a local `.env` file in `mcp/youtube-graphrag/` with Neo4j and embedding-provider credentials.
 
 ## Register with OpenClaw on the VM
 
@@ -334,6 +376,8 @@ Transcript chunks, timestamps, `TranscriptChunk`, `NEXT` relationships, course/m
 - Use a read-only Neo4j credential when your Neo4j tier supports it.
 - Keep `run_readonly_cypher` conservative; it blocks common write/admin keywords.
 - For production, use Google Secret Manager or Cloud Run secrets instead of local `.env` files.
+- Use YouTube data only in ways that follow the YouTube API Services Terms of Service and your own data-retention policy.
+- Do not include private institutional materials, internal service URLs, or non-public workflow credentials in public tutorial commits.
 
 ## Relationship to Gemini Live
 
